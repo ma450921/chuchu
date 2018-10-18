@@ -1,7 +1,7 @@
 /***
     Little WebGL helper to apply images, videos or canvases as textures of planes
     Author: Martin Laxenaire https://www.martin-laxenaire.fr/
-    Version: 1.4
+    Version: 1.5
 
     Compatibility
     PC: Chrome (65.0), Firefox (59.0.2), Microsoft Edge (41)
@@ -132,11 +132,34 @@ Curtains.prototype._contextRestored = function() {
 Dispose everything
 ***/
 Curtains.prototype.dispose = function() {
-    window.cancelAnimationFrame(this.requestAnimationFrameID);
 
-    if(this.glContext) {
-        this.glContext.getExtension('WEBGL_lose_context').loseContext();
+    // be sure to delete all planes
+    while(this.planes.length > 0) {
+        this.removePlane(this.planes[0]);
     }
+
+    // wait for all planes to be deleted before stopping everything
+    var self = this;
+    var deleteInterval = setInterval(function() {
+        if(self.planes.length == 0) {
+            // clear interval
+            clearInterval(deleteInterval);
+
+            // clear the buffer to clean scene
+            self.glContext.clear(self.glContext.DEPTH_BUFFER_BIT | self.glContext.COLOR_BUFFER_BIT);
+
+            // cancel animation frame
+            window.cancelAnimationFrame(self.requestAnimationFrameID);
+
+            // lose context
+            if(self.glContext) {
+                self.glContext.getExtension('WEBGL_lose_context').loseContext();
+            }
+
+        }
+    }, 100);
+
+
 }
 
 
@@ -234,6 +257,98 @@ Curtains.prototype.addPlane = function(planeHtmlElement, params) {
 
     return plane;
 };
+
+
+
+/***
+Completly remove a plane element (delete from draw stack, delete buffers and textures, empties object, remove)
+
+params :
+    @plane (plane element) : the plane element to remove
+***/
+Curtains.prototype.removePlane = function(plane) {
+
+    // first we want to stop drawing it
+    plane.canDraw = false;
+
+    // remove from draw stack
+
+    // get the right stack where our planed is stored
+    var definition = plane.definition.width * plane.definition.height + plane.definition.width;
+    var drawStack = this.drawStack;
+    var stackIndex;
+    for(var i = 0; i < drawStack.length; i++) {
+        if(drawStack[i].definition == definition) {
+            stackIndex = i;
+        }
+    }
+
+    // we don't want to draw that stack since we are manipulating it
+    drawStack[stackIndex].isReordering = true;
+
+    var planeStackIndex;
+    for(var i = 0; i < drawStack[stackIndex].planesIndex.length; i++) {
+        if(plane.index === drawStack[stackIndex].planesIndex[i]) {
+            planeStackIndex = i;
+        }
+    }
+
+    // before we delete it from the draw stack array we need to update all the indexes that come after it
+    for(var i = planeStackIndex + 1; i < drawStack[stackIndex].planesIndex.length; i++) {
+        drawStack[stackIndex].planesIndex[i]--;
+    }
+
+    // delete it from the draw stack
+    this.drawStack[stackIndex].planesIndex.splice(planeStackIndex, 1);
+
+    // now free the webgl part
+
+    // unbind and delete the textures
+    for(var i = 0; i < plane.textures.length; i++) {
+        this.glContext.activeTexture(this.glContext.TEXTURE0 + plane.textures[i].index);
+        this.glContext.bindTexture(this.glContext.TEXTURE_2D, null);
+        this.glContext.deleteTexture(plane.textures[i].glTexture);
+
+        // decrease textures loaded as it is our texture index and it is limited in WebGL
+        this.loadingManager.texturesLoaded--;
+    }
+
+    // delete buffers
+    this.glContext.bindBuffer(this.glContext.ARRAY_BUFFER, plane.geometry.bufferInfos.id);
+    this.glContext.bufferData(this.glContext.ARRAY_BUFFER, 1, this.glContext.STATIC_DRAW);
+    this.glContext.deleteBuffer(plane.geometry.bufferInfos.id);
+
+    this.glContext.bindBuffer(this.glContext.ARRAY_BUFFER, plane.material.bufferInfos.id);
+    this.glContext.bufferData(this.glContext.ARRAY_BUFFER, 1, this.glContext.STATIC_DRAW);
+    this.glContext.deleteBuffer(plane.material.bufferInfos.id);
+
+    // delete the shaders
+    this.glContext.deleteShader(plane.shaders.fragmentShader);
+    this.glContext.deleteShader(plane.shaders.vertexShader);
+
+    // and delete the program at last
+    this.glContext.deleteProgram(plane.program);
+
+    // remove from our Curtains planes array
+    var planeIndex;
+    for(var i = 0; i < this.planes.length; i++) {
+        if(plane.index === this.planes[i].index) {
+            planeIndex = i;
+        }
+    }
+
+    // finally erase the plane
+    plane = null;
+    this.planes[planeIndex] = null;
+    this.planes.splice(planeIndex, 1);
+
+    // clear the buffer to clean scene
+    this.glContext.clear(this.glContext.DEPTH_BUFFER_BIT | this.glContext.COLOR_BUFFER_BIT);
+
+    // we are no longer manipulating the drawstack, we can draw it again
+    drawStack[stackIndex].isReordering = false;
+};
+
 
 
 /***
@@ -374,7 +489,7 @@ Curtains.prototype._readyToDraw = function() {
     // enable depth by default
     this._handleDepth(true);
 
-    console.log("curtains.js - v1.4");
+    console.log("curtains.js - v1.5");
 
     var self = this;
     function animatePlanes() {
@@ -399,9 +514,6 @@ Curtains.prototype._drawScene = function() {
     // Clear the color buffer,
     this.glContext.clearColor(0.0, 0.0, 0.0, 0.0);
     this.glContext.clearDepth(1.0);
-    //this.glContext.clear(this.glContext.COLOR_BUFFER_BIT | this.glContext.DEPTH_BUFFER_BIT);
-
-
 
     this._reSize();
 
@@ -410,22 +522,27 @@ Curtains.prototype._drawScene = function() {
         if(!this.drawStack[i].isReordering) {
             for(var j = 0; j < this.drawStack[i].planesIndex.length; j++) {
 
-                // set/unset the depth test if needed
-                if(this.planes[this.drawStack[i].planesIndex[j]].shouldUseDepthTest && !this._shouldHandleDepth) {
-                    this._handleDepth(true);
-                }
-                else if(!this.planes[this.drawStack[i].planesIndex[j]].shouldUseDepthTest && this._shouldHandleDepth) {
-                    this._handleDepth(false);
+                var plane = this.planes[this.drawStack[i].planesIndex[j]];
+                // be sure the plane exists
+                if(plane) {
+                    // set/unset the depth test if needed
+                    if(plane.shouldUseDepthTest && !this._shouldHandleDepth) {
+                        this._handleDepth(true);
+                    }
+                    else if(!plane.shouldUseDepthTest && this._shouldHandleDepth) {
+                        this._handleDepth(false);
+                    }
+
+                    if(j == 0) {
+                        // draw the plane and bind the buffers
+                        plane._drawPlane(true);
+                    }
+                    else {
+                        // draw the plane without binding buffers
+                        plane._drawPlane(false);
+                    }
                 }
 
-                if(j == 0) {
-                    // draw the plane and bind the buffers
-                    this.planes[this.drawStack[i].planesIndex[j]]._drawPlane(true);
-                }
-                else {
-                    // draw the plane without binding buffers
-                    this.planes[this.drawStack[i].planesIndex[j]]._drawPlane(false);
-                }
             }
         }
 
@@ -1821,6 +1938,9 @@ Plane.prototype.loadVideos = function(videosArray) {
 
         video.crossOrigin = this.crossOrigin;
 
+        // keep track of the timestamp so we know if we should update the texture or not
+        video.timestamp = 0;
+
         // handle only one src
         if(videosArray[i].src) {
             video.src = videosArray[i].src;
@@ -1869,15 +1989,12 @@ Plane.prototype.playVideos = function() {
 
             // In browsers that don’t yet support this functionality,
             // playPromise won’t be defined.
+            var texture = this.textures[i];
             if (playPromise !== undefined) {
                 playPromise.catch(function(error) {
                     console.warn("Could not play the video : ", error);
                 });
             }
-
-            // Flip the video's Y axis to match the WebGL texture coordinate space.
-            this.wrapper.glContext.bindTexture(this.wrapper.glContext.TEXTURE_2D, this.textures[i].glTexture);
-            this.wrapper.glContext.pixelStorei(this.wrapper.glContext.UNPACK_FLIP_Y_WEBGL, true);
         }
     }
 }
@@ -1955,17 +2072,14 @@ Plane.prototype._createTextures = function(textureType) {
         // Bind the texture the target (TEXTURE_2D) of the active texture unit.
         glContext.bindTexture(glContext.TEXTURE_2D, texture.glTexture);
 
-        // If it's an image, flip its Y axis to match the WebGL texture coordinate space.
-        if(textureType == "image" || textureType == "canvase") {
-            glContext.pixelStorei(glContext.UNPACK_FLIP_Y_WEBGL, true);
-        }
+        // flip Y axis to match the WebGL texture coordinate space.
+        glContext.pixelStorei(glContext.UNPACK_FLIP_Y_WEBGL, true);
 
         // Set the parameters so we can render any size image.
         glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_WRAP_S, glContext.CLAMP_TO_EDGE);
         glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_WRAP_T, glContext.CLAMP_TO_EDGE);
         glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_MIN_FILTER, glContext.LINEAR);
         glContext.texParameteri(glContext.TEXTURE_2D, glContext.TEXTURE_MAG_FILTER, glContext.LINEAR);
-
 
 
         texture.index = plane.wrapper.loadingManager.texturesLoaded;
@@ -2080,15 +2194,14 @@ Plane.prototype._drawPlane = function(shouldBindBuffers) {
             // bind the texture to the plane's index unit
             glContext.bindTexture(glContext.TEXTURE_2D, this.textures[j].glTexture);
 
-            // if our texture is a video we need to redraw the texture each frame
+            // if our texture is a video we need to redraw it each time the frame has changed
             if(this.textures[j].type == "video") {
-                if(!this.videos[this.textures[j].typeIndex].paused) {
-                    // if the video is playing, draw a video frame
+                if(this.videos[this.textures[j].typeIndex].timestamp !== this.videos[this.textures[j].typeIndex].currentTime) {
+                    // if the video current time has changed, draw a new video frame
                     glContext.texImage2D(glContext.TEXTURE_2D, 0, glContext.RGBA, glContext.RGBA, glContext.UNSIGNED_BYTE, this.videos[this.textures[j].typeIndex]);
-                }
-                else {
-                    // if the video is paused, draw a 1*1 black pixel
-                    glContext.texImage2D(glContext.TEXTURE_2D, 0, glContext.RGBA, 1, 1, 0, glContext.RGBA, glContext.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+
+                    // update our timestamp property
+                    this.videos[this.textures[j].typeIndex].timestamp = this.videos[this.textures[j].typeIndex].currentTime;
                 }
             }
             else if(this.textures[j].type == "canvase") {
