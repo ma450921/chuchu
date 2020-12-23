@@ -1,6 +1,4 @@
-/sitemap.xml
-/.htaccess
+.DS_Store
 /node_modules
-/build
-/examples/tests
-/.idea
+/examples/*.js
+/dist
