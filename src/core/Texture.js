@@ -115,6 +115,7 @@ export class Texture {
         this._sampler = {
             isActive: false,
             isTextureBound: false,
+            texture: this.gl.createTexture(), // always create a gl texture
         };
 
         // we will always declare a texture matrix
@@ -125,8 +126,8 @@ export class Texture {
 
         // actual size will be set later on
         this._size = {
-            width: 0,
-            height: 0,
+            width: 1,
+            height: 1,
         };
 
         this.scale = new Vec2(1);
@@ -190,15 +191,11 @@ export class Texture {
      Init our texture object
      ***/
     _initTexture() {
-        // create our WebGL texture
-        this._sampler.texture = this.gl.createTexture();
-
         // bind the texture the target (TEXTURE_2D) of the active texture unit.
         this.gl.bindTexture(this.gl.TEXTURE_2D, this._sampler.texture);
 
         if(this.sourceType === "empty") {
-            // avoid flipY on non DOM elements
-            this._globalParameters.flipY = false;
+            // update global parameters before drawing an empty texture
             this._updateGlobalTexParameters();
 
             // draw a black plane before the real texture's content has been loaded
@@ -346,7 +343,7 @@ export class Texture {
             if(this._copyOnInit) {
                 // wait for original texture to be ready before copying it
                 const waitForOriginalTexture = this.renderer.nextRender.add(() => {
-                    if(this._copiedFrom._canDraw) {
+                    if(this._copiedFrom._canDraw && this._copiedFrom._uploaded) {
                         this.copy(this._copiedFrom);
                         waitForOriginalTexture.keep = false;
                     }
@@ -485,7 +482,6 @@ export class Texture {
         // keep a track from the original one
         this._copiedFrom = texture;
 
-
         // update its texture matrix if needed and we're good to go!
         if(this._parent && this._parent._program && (!this._canDraw || !this._textureMatrix.matrix)) {
             this._setSize();
@@ -571,9 +567,6 @@ export class Texture {
 
         this.resize();
 
-        // force flipY now that we have a source
-        this._globalParameters.flipY = true;
-
         // upload our webgl texture only if it is an image
         // canvas and video textures will be updated anyway in the rendering loop
         // thanks to the shouldUpdate and _willUpdate flags
@@ -605,14 +598,14 @@ export class Texture {
             this.renderer.state.unpackAlignment = this._globalParameters.unpackAlignment;
         }
 
-        // flip Y
-        if(this.renderer.state.flipY !== this._globalParameters.flipY) {
+        // flip Y only if source is not empty
+        if(this.renderer.state.flipY !== this._globalParameters.flipY && this.sourceType !== "empty") {
             this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, this._globalParameters.flipY);
             this.renderer.state.flipY = this._globalParameters.flipY;
         }
 
-        // premultiplied alpha
-        if(this.renderer.state.premultiplyAlpha !== this._globalParameters.premultiplyAlpha) {
+        // premultiplied alpha only if source is not empty
+        if(this.renderer.state.premultiplyAlpha !== this._globalParameters.premultiplyAlpha && this.sourceType !== "empty") {
             this.gl.pixelStorei(this.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, this._globalParameters.premultiplyAlpha);
             this.renderer.state.premultiplyAlpha = this._globalParameters.premultiplyAlpha;
         }
